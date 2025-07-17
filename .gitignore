@@ -9,3 +9,9 @@ out/
 
 # Dotenv file
 .env
+
+# Libs
+lib/
+
+# Build
+build/
