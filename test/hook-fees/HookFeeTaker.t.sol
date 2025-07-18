@@ -212,7 +212,7 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
     }
 
     // Proof that a hook can empty the user wallet for unspecified currency, when using a router that performs no checks.
-    function test_beforeSwapHookFee_unspecifiedFee_emptyWallet_swapRouter_noChecks_succeeds() public {
+    function test_beforeSwapHookFee_unspecifiedFee_emptiesWallet_swapRouter_noChecks_succeeds() public {
         address swapper = makeAddr("swapper");
         uint256 swapperBalance = 5e15;
 
