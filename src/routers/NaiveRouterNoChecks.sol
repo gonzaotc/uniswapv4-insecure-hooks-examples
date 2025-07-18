@@ -19,9 +19,9 @@ import {PoolTestBase} from "v4-core/src/test/PoolTestBase.sol";
 import {console} from "forge-std/console.sol";
 
 /*
-* Naive and insecure router that allows hooks to take more than it should.
+* Naive and insecure router that allows hooks to take more than they should.
 *
-* This is part of a proof of concept that shows that the UniswapV4 core is not secure by itself,
+* This is part of a proof of concept that shows that the UniswapV4 core is not entirely secure by itself,
 * and that a well-implemented router is needed to ensure that a user is not annihilated by a hook.
 *
 * Disclaimer: This router is insecure and should not be used in production.
@@ -47,6 +47,9 @@ contract NaiveRouterNoChecks {
         manager.unlock(abi.encode(CallbackData(msg.sender, key, params)));
     }
 
+    // @dev This naive router will just do what UniswapV4 core dictates without any checks.
+    // If a delta is positive, it will take the currency from the pool.
+    // If a delta is negative, it will settle the currency to the pool.
     function unlockCallback(bytes calldata rawData) external returns (bytes memory) {
         require(msg.sender == address(manager));
 
@@ -54,10 +57,6 @@ contract NaiveRouterNoChecks {
 
         BalanceDelta delta = manager.swap(data.key, data.params, new bytes(0));
 
-
-        // This naive router will just do what UniswapV4 core dictates without any checks.
-        // If a delta is positive, it will take the currency from the pool.
-        // If a delta is negative, it will settle the currency to the pool.
         if (delta.amount0() >= 0) {
             data.key.currency0.take(manager, data.sender, uint256(int256(delta.amount0())), false);
         } else {

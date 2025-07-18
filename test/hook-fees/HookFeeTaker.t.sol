@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 // Forge Std
 import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
 
 // OpenZeppelin's Hooks library
 import {IPoolManagerEvents} from "uniswap-hooks/test/utils/interfaces/IPoolManagerEvents.sol";
@@ -18,6 +19,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
+import {ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 
 // Local
 import {NaiveRouterNoChecks} from "src/routers/NaiveRouterNoChecks.sol";
@@ -57,7 +59,7 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
         MockERC20(Currency.unwrap(currency1)).approve(address(naiveRouterNoChecks), type(uint256).max);
     }
 
-    function test_setMockHookFee() public {
+    function test_setMockHookFee_succeeds() public {
         hookFeeTaker.setMockHookFee(100, 100, 100);
 
         (uint128 beforeSwapSpecifiedFee, uint128 beforeSwapUnspecifiedFee, uint128 afterSwapUnspecifiedFee) =
@@ -68,7 +70,7 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
         assertEq(afterSwapUnspecifiedFee, 100);
     }
 
-    function test_swap_no_fee() public {
+    function test_swap_no_fee_succeeds() public {
         hookFeeTaker.setMockHookFee(0, 0, 0);
 
         vm.expectEmit(true, true, true, true, address(manager));
@@ -122,10 +124,11 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
     function test_beforeSwapHookFee_unspecifiedFee_100percent_succeeds() public {
         int128 amountToSwap = -100;
 
+        // for -100 currency1 the user would get 99 currency1.
         hookFeeTaker.setMockHookFee(0, 99, 0);
 
         // Note that when the hook fee is taken from the `unspecifiedAmount`, it is taken during `afterSwap` implicitly,
-        // therefore the `Swap` event will look like the user is not paying any hook fee!, while he is.
+        // therefore the `Swap` event will here look like the user is not paying any hook fee, while he is.
         vm.expectEmit(true, true, true, true, address(manager));
         emit Swap(key.toId(), address(swapRouter), -100, 99, 79228162514264329670727698910, 1e18, -1, 0);
 
@@ -140,16 +143,18 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
         assertEq(currency1.balanceOf(address(hookFeeTaker)), 99);
     }
 
-    // Proof that during `afterSwap`, no more than the `unspecifiedAmount` can be taken as a hook fee.
+    // Proof that during `afterSwap`, no larger hook fee than the `unspecifiedAmount` can be taken,
+    // when using a well-implemented router that performs checks.
     //
-    // IMPORTANT NOTE: this is not enforced by the UniswapV4 core, it is instead enforced at the router level!!!
+    // NOTE: this validation is not enforced by the UniswapV4 core, it is instead enforced at the router level!
+    // No checks routers effectively allows hooks to take from both currency0 and currency1, particularly unlimitedly on 
+    // the unspecified currency, this hook may empty the user wallet for unspecified currency!!
     //
-    // This means that we may have a router that does not perform the check, and therefore allows hooks to take more, 
-    // effectively being able to take money from both currency0 and currency1, with no limit on currency1!
-    //
+    // This is why it is important to use a well-implemented router that performs checks, like the `swapRouter`.
     function test_afterSwapHookFee_unspecifiedFee_100percent_plus1_swapRouter_checks_reverts() public {
         int128 amountToSwap = -100;
 
+        // for -100 currency1 the user would get 99 currency1, but the hook will take 99+1 currency1 for this proof.
         hookFeeTaker.setMockHookFee(0, 99 + 1, 0);
 
         // Again, as `unspecifiedAmount` is taken during `afterSwap`, the `Swap` event will look like the user is not paying any hook fee.
@@ -171,6 +176,7 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
     function test_beforeSwapHookFee_unspecifiedFee_100percent_plus1_swapRouter_noChecks_succeeds() public {
         int128 amountToSwap = -100;
 
+        // for -100 currency1 the user would get 99 currency1, but the hook will take 99+1 currency1 for this proof.
         hookFeeTaker.setMockHookFee(0, 99 + 1, 0);
 
         // Again, as `unspecifiedAmount` is taken during `beforeSwap`, the `Swap` event will look like the user is not paying any hook fee.
@@ -205,12 +211,24 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
         assertEq(currency1.balanceOf(address(hookFeeTaker)), 99 + 1);
     }
 
-    // Proof that even a larger amount than the swap can be taken as a hook fee on a router that performs no checks.
+    // Proof that a hook can empty the user wallet for unspecified currency, when using a router that performs no checks.
     function test_beforeSwapHookFee_unspecifiedFee_largeFee_swapRouter_noChecks_succeeds() public {
-        int128 amountToSwap = -100;
-        uint256 largeFee = 99999999999;
+        address swapper = makeAddr("swapper");
+        uint256 swapperBalance = 5e15;
 
-        hookFeeTaker.setMockHookFee(0, 0, uint128(largeFee));
+        // mint tokens to the swapper
+        MockERC20(Currency.unwrap(currency0)).mint(swapper, swapperBalance);
+        MockERC20(Currency.unwrap(currency1)).mint(swapper, swapperBalance);
+
+        // approve the naive router to spend the tokens
+        vm.startPrank(swapper);
+        MockERC20(Currency.unwrap(currency0)).approve(address(naiveRouterNoChecks), swapperBalance);
+        MockERC20(Currency.unwrap(currency1)).approve(address(naiveRouterNoChecks), swapperBalance);
+        
+        int128 amountToSwap = -100;
+
+        // The user will receive 99 currency1, but the hook will take that plus all the user currency1 balance!
+        hookFeeTaker.setMockHookFee(0, 0, 99 + uint128(swapperBalance));
 
         // Again, as `unspecifiedAmount` is taken during `beforeSwap`, the `Swap` event will look like the user is not paying any hook fee.
         vm.expectEmit(true, true, true, true, address(manager));
@@ -221,8 +239,13 @@ contract HookFeeTakerTest is Test, Deployers, IPoolManagerEvents {
             key, SwapParams({zeroForOne: true, amountSpecified: amountToSwap, sqrtPriceLimitX96: SQRT_PRICE_1_2})
         );
 
-        // here comes the tricky part; the hook received even more than what the user received.
-        assertEq(currency1.balanceOf(address(hookFeeTaker)), largeFee);
+        // here comes the tricky part; the hook received the swap result plus the user currency1 balance.
+        assertEq(currency1.balanceOf(address(hookFeeTaker)), 99 + swapperBalance);
+
+        // check that the user has no currency1 left
+        assertEq(currency1.balanceOf(address(swapper)), 0);
+
+        vm.stopPrank();
     }
 
 }
